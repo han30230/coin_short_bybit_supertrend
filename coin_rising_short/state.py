@@ -74,19 +74,27 @@ def load_qualified_watch() -> None:
         if not isinstance(raw, dict):
             return
         restored = 0
+        bot_orders = raw.get(runtime._BOT_ORDERS_META_KEY)
+        if isinstance(bot_orders, list):
+            for pair in bot_orders:
+                if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                    runtime.BOT_ENTRY_ORDER_KEYS.add((str(pair[0]), str(pair[1])))
         for symbol, entry in raw.items():
+            if symbol == runtime._BOT_ORDERS_META_KEY:
+                continue
             if not isinstance(entry, dict):
                 continue
             if bool(entry.get("halted", False)):
                 runtime.ST_HALTED_SYMBOLS.add(symbol)
                 continue
-            if symbol in position_state:
-                continue
+            if bool(entry.get("st_tracked", False)):
+                runtime.ST_TRACKED_SYMBOLS.add(symbol)
             runtime.QUALIFIED_WATCH[symbol] = {
                 "added_at": float(entry.get("added_at", 0)),
                 "last_direction": None,
                 "consecutive_losses": int(entry.get("consecutive_losses", 0)),
                 "halted": False,
+                "last_flat_direction": entry.get("last_flat_direction"),
             }
             restored += 1
         if restored:
@@ -106,17 +114,22 @@ def save_qualified_watch() -> None:
     try:
         path = config.SUPERTREND_WATCH_STATE_PATH
         tmp = path + ".tmp"
-        payload: Dict[str, Any] = {
-            sym: {
+        payload: Dict[str, Any] = {}
+        for sym, entry in runtime.QUALIFIED_WATCH.items():
+            if not isinstance(entry, dict):
+                continue
+            payload[sym] = {
                 "added_at": entry.get("added_at", 0),
                 "consecutive_losses": int(entry.get("consecutive_losses", 0)),
                 "halted": False,
+                "st_tracked": sym in runtime.ST_TRACKED_SYMBOLS,
+                "last_flat_direction": entry.get("last_flat_direction"),
             }
-            for sym, entry in runtime.QUALIFIED_WATCH.items()
-            if isinstance(entry, dict)
-        }
         for sym in runtime.ST_HALTED_SYMBOLS:
             payload[sym] = {"halted": True, "consecutive_losses": config.ST_MAX_CONSECUTIVE_LOSSES}
+        payload[runtime._BOT_ORDERS_META_KEY] = [
+            [sym, oid] for sym, oid in sorted(runtime.BOT_ENTRY_ORDER_KEYS)
+        ]
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)

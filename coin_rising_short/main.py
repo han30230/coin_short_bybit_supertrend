@@ -96,7 +96,7 @@ def run() -> None:
     _configure_logging()
     logger = logging.getLogger(__name__)
     logger.info(
-        "Bybit Linear + Spot 공존 필터 버전 시작 (ENV=%s)",
+        "Bybit USDT 선물 SuperTrend 봇 시작 (ENV=%s)",
         config.ENV,
         extra={"event": "startup"},
     )
@@ -114,7 +114,12 @@ def run() -> None:
     runtime.IS_HEDGE = orders.get_dual_side_position()
     logger.info("Hedge mode?: %s", runtime.IS_HEDGE, extra={"event": "hedge_mode_checked"})
 
-    state.load_qualified_watch()
+    logger.info(
+        "ST 추적 상한=%s | 동시 포지션 상한=%s",
+        config.MAX_ST_TRACKED_SYMBOLS,
+        config.MAX_CONCURRENT_ST_SYMBOLS,
+        extra={"event": "st_limits_configured"},
+    )
     sync.sync_state_with_exchange()
     monitor.monitor_loop()
 

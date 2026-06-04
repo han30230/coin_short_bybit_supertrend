@@ -68,16 +68,25 @@ def normalize_order_status(bybit_status: str) -> str:
     return _ORDER_STATUS_MAP.get(bybit_status, bybit_status)
 
 
+def normalize_order_id(order_id) -> str:
+    """Bybit orderId: 숫자 문자열 또는 UUID."""
+    if order_id is None:
+        return ""
+    return str(order_id).strip()
+
+
 def normalize_order(raw: dict) -> dict:
     """Binance 호환 형태로 주문 필드 정규화."""
     oid = raw.get("orderId")
     return {
         "symbol": raw.get("symbol"),
-        "orderId": int(oid) if oid is not None else 0,
+        "orderId": normalize_order_id(oid),
         "status": normalize_order_status(str(raw.get("orderStatus", ""))),
         "avgPrice": str(raw.get("avgPrice") or "0"),
         "executedQty": str(raw.get("cumExecQty") or "0"),
+        "createdTime": int(raw.get("createdTime") or raw.get("updatedTime") or 0),
         "updateTime": int(raw.get("updatedTime") or raw.get("createdTime") or 0),
+        "reduceOnly": bool(raw.get("reduceOnly")),
     }
 
 
@@ -396,12 +405,15 @@ def get_open_orders() -> List[dict]:
     return []
 
 
-def get_order_detail(symbol: str, order_id: int) -> Optional[dict]:
+def get_order_detail(symbol: str, order_id) -> Optional[dict]:
+    oid = normalize_order_id(order_id)
+    if not oid:
+        return None
     for open_only in (True, False):
         params: dict = {
             "category": config.CATEGORY_LINEAR,
             "symbol": symbol,
-            "orderId": str(order_id),
+            "orderId": oid,
         }
         path = "/v5/order/realtime" if open_only else "/v5/order/history"
         result = signed_get(path, params)
@@ -416,13 +428,16 @@ def get_order_detail(symbol: str, order_id: int) -> Optional[dict]:
     return {"status": "NOT_FOUND"}
 
 
-def cancel_order(symbol: str, order_id: int) -> bool:
+def cancel_order(symbol: str, order_id) -> bool:
+    oid = normalize_order_id(order_id)
+    if not oid:
+        return False
     result = signed_post(
         "/v5/order/cancel",
         {
             "category": config.CATEGORY_LINEAR,
             "symbol": symbol,
-            "orderId": str(order_id),
+            "orderId": oid,
         },
     )
     if isinstance(result, dict) and result.get("_error"):
@@ -436,7 +451,7 @@ def place_market_order_raw(
     qty: str,
     position_side: Optional[str],
     reduce_only: bool = False,
-) -> Tuple[Optional[int], Optional[dict]]:
+) -> Tuple[Optional[str], Optional[dict]]:
     body: dict = {
         "category": config.CATEGORY_LINEAR,
         "symbol": symbol,
@@ -456,7 +471,7 @@ def place_market_order_raw(
             "msg": result.get("retMsg"),
         }
     if isinstance(result, dict) and result.get("orderId"):
-        return int(result["orderId"]), None
+        return normalize_order_id(result["orderId"]), None
     return None, {"msg": str(result)}
 
 
@@ -467,7 +482,7 @@ def place_limit_order_raw(
     qty: str,
     position_side: Optional[str],
     reduce_only: bool = False,
-) -> Tuple[Optional[int], Optional[dict]]:
+) -> Tuple[Optional[str], Optional[dict]]:
     body: dict = {
         "category": config.CATEGORY_LINEAR,
         "symbol": symbol,
@@ -488,7 +503,7 @@ def place_limit_order_raw(
             "msg": result.get("retMsg"),
         }
     if isinstance(result, dict) and result.get("orderId"):
-        return int(result["orderId"]), None
+        return normalize_order_id(result["orderId"]), None
     return None, {"msg": str(result)}
 
 

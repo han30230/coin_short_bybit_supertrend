@@ -1,7 +1,11 @@
 import logging
 import time
 from decimal import Decimal
-from typing import Optional, Tuple
+from typing import Optional, Set, Tuple, Union
+
+OrderKey = Tuple[str, str]
+
+OrderId = Union[int, str]
 
 from coin_rising_short import client, config, filters, runtime
 
@@ -41,7 +45,7 @@ def set_dual_side_position(enable: bool) -> bool:
     return client.set_dual_side_position(enable)
 
 
-def get_order_status(symbol: str, order_id: int) -> Optional[str]:
+def get_order_status(symbol: str, order_id: OrderId) -> Optional[str]:
     try:
         detail = client.get_order_detail(symbol, order_id)
         if not detail:
@@ -54,7 +58,7 @@ def get_order_status(symbol: str, order_id: int) -> Optional[str]:
         return None
 
 
-def get_order_detail(symbol: str, order_id: int) -> Optional[dict]:
+def get_order_detail(symbol: str, order_id: OrderId) -> Optional[dict]:
     try:
         return client.get_order_detail(symbol, order_id)
     except Exception as e:
@@ -62,7 +66,7 @@ def get_order_detail(symbol: str, order_id: int) -> Optional[dict]:
         return None
 
 
-def cancel_order(symbol: str, order_id: int) -> bool:
+def cancel_order(symbol: str, order_id: OrderId) -> bool:
     try:
         if client.cancel_order(symbol, order_id):
             logger.info(
@@ -86,7 +90,7 @@ def cancel_order(symbol: str, order_id: int) -> bool:
 
 def place_limit_order(
     symbol: str, side: str, price: Decimal, qty: Decimal, position_side: Optional[str]
-) -> Tuple[Optional[int], Optional[dict]]:
+) -> Tuple[Optional[str], Optional[dict]]:
     try:
         order_id, err = client.place_limit_order_raw(
             symbol=symbol,
@@ -138,7 +142,7 @@ def place_limit_order(
 
 def place_take_profit_order(
     symbol: str, direction: str, entry_price: Decimal, qty: Decimal
-) -> Optional[int]:
+) -> Optional[str]:
     try:
         price_step, qty_step, min_qty, min_notional = filters.get_price_step_and_qty_step(symbol)
 
@@ -209,9 +213,94 @@ def _is_risk_limit_error(err: Optional[dict]) -> bool:
         return False
 
 
+def _fill_price_from_order(symbol: str, order_id: str, fallback: Decimal) -> Decimal:
+    time.sleep(0.5)
+    detail = get_order_detail(symbol, order_id)
+    if detail:
+        ap = Decimal(str(detail.get("avgPrice", "0")))
+        if ap > 0:
+            return ap
+    return fallback
+
+
+def cancel_stale_open_entry_orders(allowed: Optional[Set[OrderKey]] = None) -> int:
+    """이 봇이 등록한 진입 주문만 — OPEN_ORDER_MAX_AGE_DAYS 초과 시 취소."""
+    if not allowed:
+        return 0
+    max_age_ms = config.OPEN_ORDER_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+    now_ms = client.effective_timestamp_ms()
+    canceled = 0
+    try:
+        for o in client.get_open_orders():
+            if o.get("reduceOnly"):
+                continue
+            if o.get("status") not in ("NEW", "PARTIALLY_FILLED"):
+                continue
+            sym = o.get("symbol")
+            oid = o.get("orderId")
+            if not sym or not oid:
+                continue
+            if (sym, str(oid)) not in allowed:
+                continue
+            created = int(o.get("createdTime") or 0)
+            if created <= 0 or now_ms - created < max_age_ms:
+                continue
+            if cancel_order(sym, oid):
+                canceled += 1
+                logger.warning(
+                    "미체결 진입 주문 기한 초과 취소: %s orderId=%s (%s일)",
+                    sym,
+                    oid,
+                    config.OPEN_ORDER_MAX_AGE_DAYS,
+                    extra={
+                        "event": "stale_bot_entry_order_canceled",
+                        "symbol": sym,
+                        "order_id": oid,
+                    },
+                )
+                runtime.BOT_ENTRY_ORDER_KEYS.discard((sym, str(oid)))
+    except Exception as exc:
+        logger.warning("미체결 주문 정리 실패: %s", exc)
+    return canceled
+
+
+def _place_market_entry(
+    symbol: str,
+    side: str,
+    qty: Decimal,
+    position_side: Optional[str],
+    ref_price: Decimal,
+) -> Tuple[Optional[Tuple[Decimal, Decimal, str]], Optional[dict]]:
+    order_id, err = client.place_market_order_raw(
+        symbol=symbol,
+        side=side,
+        qty=str(qty),
+        position_side=position_side,
+        reduce_only=False,
+    )
+    if order_id is None:
+        return None, err
+    fill_price = _fill_price_from_order(symbol, order_id, ref_price)
+    logger.info(
+        "시장가 진입: %s %s qty=%s @ %s orderId=%s",
+        side,
+        symbol,
+        qty,
+        fill_price,
+        order_id,
+        extra={
+            "event": "market_entry_placed",
+            "symbol": symbol,
+            "side": side,
+            "order_id": order_id,
+        },
+    )
+    return (fill_price, qty, order_id), None
+
+
 def close_position_market(
     symbol: str, direction: str, qty: Decimal
-) -> Optional[Tuple[Decimal, int]]:
+) -> Optional[Tuple[Decimal, str]]:
     """보유 포지션(direction) 시장가 청산. (체결가 추정용 현재가, orderId) 반환."""
     if qty <= 0:
         return None
@@ -269,29 +358,42 @@ def close_position_market(
 
 def place_short_order(
     symbol: str, notional_usdt: Optional[Decimal] = None
-) -> Optional[Tuple[Decimal, Decimal, int]]:
+) -> Optional[Tuple[Decimal, Decimal, str]]:
     logger.info("숏 주문 시도: %s", symbol)
     try:
         ensure_leverage(symbol)
         price = client.get_ticker_price(symbol)
         price_step, qty_step, min_qty, min_notional = filters.get_price_step_and_qty_step(symbol)
 
-        raw_price = price * (Decimal("1") + config.PREMIUM_PCT)
-        limit_price = filters.round_step_floor(raw_price, price_step)
-
+        ref_price = price
         target_notional = notional_usdt if notional_usdt is not None else config.POSITION_USDT
+        pos_side = "SHORT" if runtime.IS_HEDGE else None
 
         for attempt in range(10):
-            qty = filters.round_step_floor(target_notional / limit_price, qty_step)
+            est_price = ref_price * (
+                (Decimal("1") + config.PREMIUM_PCT) if not config.USE_MARKET_ENTRY else Decimal("1")
+            )
+            qty = filters.round_step_floor(target_notional / est_price, qty_step)
             adj = filters.adjust_qty_for_min_notional(
-                limit_price, qty, qty_step, min_qty, min_notional
+                est_price, qty, qty_step, min_qty, min_notional
             )
             if adj is None:
                 logger.warning("MIN_NOTIONAL 충족 불가: %s", symbol)
                 return None
             qty = adj
 
-            pos_side = "SHORT" if runtime.IS_HEDGE else None
+            if config.USE_MARKET_ENTRY:
+                result, err = _place_market_entry(symbol, "SELL", qty, pos_side, ref_price)
+                if result is not None:
+                    return result
+                if _is_risk_limit_error(err):
+                    target_notional = target_notional / Decimal("2")
+                    continue
+                return None
+
+            limit_price = filters.round_step_floor(
+                ref_price * (Decimal("1") + config.PREMIUM_PCT), price_step
+            )
             order_id, err = place_limit_order(symbol, "SELL", limit_price, qty, pos_side)
             if order_id is not None:
                 return limit_price, qty, order_id
@@ -304,10 +406,6 @@ def place_short_order(
                     attempt + 1,
                 )
                 target_notional = target_notional / Decimal("2")
-                q_try = filters.round_step_floor(target_notional / limit_price, qty_step)
-                if q_try < min_qty:
-                    logger.warning("명목 축소 후 최소 수량 미만: %s", symbol)
-                    return None
                 continue
             return None
 
@@ -320,29 +418,42 @@ def place_short_order(
 
 def place_long_order(
     symbol: str, notional_usdt: Optional[Decimal] = None
-) -> Optional[Tuple[Decimal, Decimal, int]]:
+) -> Optional[Tuple[Decimal, Decimal, str]]:
     logger.info("롱 주문 시도: %s", symbol)
     try:
         ensure_leverage(symbol)
         price = client.get_ticker_price(symbol)
         price_step, qty_step, min_qty, min_notional = filters.get_price_step_and_qty_step(symbol)
 
-        raw_price = price * (Decimal("1") - config.DISCOUNT_PCT)
-        limit_price = filters.round_step_floor(raw_price, price_step)
-
+        ref_price = price
         target_notional = notional_usdt if notional_usdt is not None else config.POSITION_USDT
+        pos_side = "LONG" if runtime.IS_HEDGE else None
 
         for attempt in range(10):
-            qty = filters.round_step_floor(target_notional / limit_price, qty_step)
+            est_price = ref_price * (
+                (Decimal("1") - config.DISCOUNT_PCT) if not config.USE_MARKET_ENTRY else Decimal("1")
+            )
+            qty = filters.round_step_floor(target_notional / est_price, qty_step)
             adj = filters.adjust_qty_for_min_notional(
-                limit_price, qty, qty_step, min_qty, min_notional
+                est_price, qty, qty_step, min_qty, min_notional
             )
             if adj is None:
                 logger.warning("MIN_NOTIONAL 충족 불가: %s", symbol)
                 return None
             qty = adj
 
-            pos_side = "LONG" if runtime.IS_HEDGE else None
+            if config.USE_MARKET_ENTRY:
+                result, err = _place_market_entry(symbol, "BUY", qty, pos_side, ref_price)
+                if result is not None:
+                    return result
+                if _is_risk_limit_error(err):
+                    target_notional = target_notional / Decimal("2")
+                    continue
+                return None
+
+            limit_price = filters.round_step_floor(
+                ref_price * (Decimal("1") - config.DISCOUNT_PCT), price_step
+            )
             order_id, err = place_limit_order(symbol, "BUY", limit_price, qty, pos_side)
             if order_id is not None:
                 return limit_price, qty, order_id
@@ -355,10 +466,6 @@ def place_long_order(
                     attempt + 1,
                 )
                 target_notional = target_notional / Decimal("2")
-                q_try = filters.round_step_floor(target_notional / limit_price, qty_step)
-                if q_try < min_qty:
-                    logger.warning("명목 축소 후 최소 수량 미만: %s", symbol)
-                    return None
                 continue
             return None
 

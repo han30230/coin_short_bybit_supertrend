@@ -40,74 +40,37 @@ class TestMcapCache(unittest.TestCase):
         self.assertEqual(mock_fetch.call_count, 1)
 
 
-class TestMonitorQualifiedMcap(unittest.TestCase):
-    def setUp(self) -> None:
-        clear_mcap_cache()
-
-    def tearDown(self) -> None:
-        clear_mcap_cache()
-
-    def _ticker_row(self) -> dict:
+class TestMonitorQualifiedGainers(unittest.TestCase):
+    def _ticker_row(self, change: str = "0.25", turnover: str = "100") -> dict:
         return {
             "symbol": "BTCUSDT",
-            "price24hPcnt": "0.25",
-            "turnover24h": "5000000",
+            "price24hPcnt": change,
+            "turnover24h": turnover,
             "lastPrice": "50000",
         }
 
     @patch("coin_rising_short.monitor.symbols.TRADING_SYMBOLS", {"BTCUSDT": {}})
     @patch("coin_rising_short.monitor.client.get_linear_tickers")
-    def test_mcap_below_min_excluded_from_qualified(
+    def test_24h_rise_qualifies_without_funding_or_volume(
         self, mock_tickers: MagicMock,
     ) -> None:
         mock_tickers.return_value = [self._ticker_row()]
-        funding = {"BTCUSDT": Decimal("0")}
-
-        with patch.object(config, "MCAP_FILTER_ENABLED", True), patch.object(
-            config, "FILTER_MCAP_FDV", False
-        ), patch.object(config, "MIN_MARKET_CAP_USD", Decimal("100000000")), patch(
-            "coin_rising_short.monitor.market_cap.get_market_cap_usd", return_value=Decimal("50000000")
+        with patch.object(config, "USE_VOLUME_FILTER", False), patch.object(
+            config, "GAINER_THRESHOLD_PCT", Decimal("20")
         ):
-            qualified, _top = monitor.get_futures_gainers_and_top_movers(funding)
+            qualified, _top = monitor.get_24h_risers_and_top_movers()
 
-        self.assertEqual(qualified, [])
-
-    @patch("coin_rising_short.monitor.symbols.TRADING_SYMBOLS", {"BTCUSDT": {}})
-    @patch("coin_rising_short.monitor.client.get_linear_tickers")
-    def test_no_cmc_key_behaves_like_before_no_mcap_call(
-        self, mock_tickers: MagicMock,
-    ) -> None:
-        mock_tickers.return_value = [self._ticker_row()]
-        funding = {"BTCUSDT": Decimal("0")}
-
-        with patch.object(config, "MCAP_FILTER_ENABLED", False), patch(
-            "coin_rising_short.monitor.market_cap.get_market_cap_usd"
-        ) as mock_mcap:
-            qualified, _top = monitor.get_futures_gainers_and_top_movers(funding)
-
-        mock_mcap.assert_not_called()
         self.assertEqual(len(qualified), 1)
         self.assertEqual(qualified[0]["symbol"], "BTCUSDT")
-        self.assertNotIn("market_cap_usd", qualified[0])
 
     @patch("coin_rising_short.monitor.symbols.TRADING_SYMBOLS", {"BTCUSDT": {}})
     @patch("coin_rising_short.monitor.client.get_linear_tickers")
-    def test_mcap_meets_min_includes_field(
+    def test_low_change_excluded(
         self, mock_tickers: MagicMock,
     ) -> None:
-        mock_tickers.return_value = [self._ticker_row()]
-        funding = {"BTCUSDT": Decimal("0")}
-        cap = Decimal("150000000")
-
-        with patch.object(config, "MCAP_FILTER_ENABLED", True), patch.object(
-            config, "FILTER_MCAP_FDV", False
-        ), patch.object(config, "MIN_MARKET_CAP_USD", Decimal("100000000")), patch(
-            "coin_rising_short.monitor.market_cap.get_market_cap_usd", return_value=cap
-        ):
-            qualified, _top = monitor.get_futures_gainers_and_top_movers(funding)
-
-        self.assertEqual(len(qualified), 1)
-        self.assertEqual(qualified[0].get("market_cap_usd"), cap)
+        mock_tickers.return_value = [self._ticker_row(change="0.05")]
+        qualified, _top = monitor.get_24h_risers_and_top_movers()
+        self.assertEqual(qualified, [])
 
 
 if __name__ == "__main__":

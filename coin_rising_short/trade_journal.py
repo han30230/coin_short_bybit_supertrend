@@ -54,7 +54,7 @@ def _append_row(row: dict) -> None:
 def log_entry_filled(
     symbol: str,
     direction: str,
-    order_id: int,
+    order_id: Union[int, str],
     entry_price: Decimal,
     qty: Decimal,
     filled_time_ms: Optional[int],

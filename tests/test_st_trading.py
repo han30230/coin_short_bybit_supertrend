@@ -33,9 +33,40 @@ class TestStDirection(unittest.TestCase):
         self.assertEqual(curr, 1)
 
 
+class TestStFlatReentry(unittest.TestCase):
+    def test_same_direction_blocked_after_flat(self) -> None:
+        from coin_rising_short.monitor import _can_st_flat_enter
+
+        runtime.QUALIFIED_WATCH["BTCUSDT"] = {"last_flat_direction": "LONG"}
+        self.assertFalse(_can_st_flat_enter("BTCUSDT", "LONG"))
+        self.assertTrue(_can_st_flat_enter("BTCUSDT", "SHORT"))
+
+
+class TestStTrackedWatch(unittest.TestCase):
+    def setUp(self) -> None:
+        runtime.QUALIFIED_WATCH.clear()
+        runtime.ST_TRACKED_SYMBOLS.clear()
+        runtime.ST_HALTED_SYMBOLS.clear()
+
+    def test_tracked_stays_when_not_in_risers(self) -> None:
+        from coin_rising_short.monitor import _sync_qualified_watch
+
+        runtime.ST_TRACKED_SYMBOLS.add("ETHUSDT")
+        runtime.QUALIFIED_WATCH["ETHUSDT"] = {
+            "added_at": 0,
+            "consecutive_losses": 0,
+            "halted": False,
+        }
+        with patch("coin_rising_short.monitor.state.save_qualified_watch"):
+            active = _sync_qualified_watch([])
+        self.assertIn("ETHUSDT", active)
+        self.assertIn("ETHUSDT", runtime.QUALIFIED_WATCH)
+
+
 class TestStLossHalt(unittest.TestCase):
     def setUp(self) -> None:
         runtime.QUALIFIED_WATCH.clear()
+        runtime.ST_TRACKED_SYMBOLS.clear()
         runtime.ST_HALTED_SYMBOLS.clear()
 
     def test_two_losses_halt_symbol(self) -> None:
@@ -54,6 +85,7 @@ class TestStLossHalt(unittest.TestCase):
             _record_st_trade_pnl("ETHUSDT", Decimal("-0.5"))
         self.assertTrue(_is_st_halted("ETHUSDT"))
         self.assertNotIn("ETHUSDT", runtime.QUALIFIED_WATCH)
+        self.assertNotIn("ETHUSDT", runtime.ST_TRACKED_SYMBOLS)
 
     def test_profit_resets_loss_streak(self) -> None:
         runtime.QUALIFIED_WATCH["XRPUSDT"] = {"consecutive_losses": 1, "halted": False}
@@ -67,6 +99,7 @@ class TestStLossHalt(unittest.TestCase):
             _halt_st_symbol("SOLUSDT", 2)
         self.assertIn("SOLUSDT", runtime.ST_HALTED_SYMBOLS)
         self.assertNotIn("SOLUSDT", runtime.QUALIFIED_WATCH)
+        self.assertNotIn("SOLUSDT", runtime.ST_TRACKED_SYMBOLS)
 
 
 if __name__ == "__main__":
