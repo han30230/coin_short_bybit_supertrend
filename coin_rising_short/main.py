@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
-from coin_rising_short import client, config, monitor, orders, runtime, sync, symbols
+from coin_rising_short import client, config, monitor, orders, runtime, state, sync, symbols
 
 
 class JsonLineFormatter(logging.Formatter):

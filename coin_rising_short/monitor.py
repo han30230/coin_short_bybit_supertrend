@@ -1,7 +1,7 @@
 import logging
 import time
 from decimal import Decimal
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from coin_rising_short import client, config, indicators, market_cap, market_data, orders, runtime, state, symbols, trade_journal
 
@@ -314,20 +314,24 @@ def check_tp_filled_and_log() -> None:
         if st.get("entries"):
             direction = str(st["entries"][0].get("direction", "SHORT"))
 
+        entry_price = avg_entry if avg_entry > 0 else exit_price
+        pnl = trade_journal.calc_pnl_usdt(direction, entry_price, exit_price, exit_qty)
+
         trade_journal.log_exit_filled(
             symbol=symbol,
             direction=direction,
             entry_order_id="MULTI",
             tp_order_id=int(tp_oid),
-            entry_price=avg_entry if avg_entry > 0 else exit_price,
+            entry_price=entry_price,
             exit_price=exit_price,
             qty=exit_qty,
             entry_time_ms=None,
             exit_time_ms=tp_detail.get("updateTime") if isinstance(tp_detail.get("updateTime"), int) else None,
             note="평균진입가 기준 TP 청산",
         )
+        if config.USE_SUPERTREND_ENTRY and st.get("st_mode"):
+            _record_st_trade_pnl(symbol, pnl)
         st["tp_exit_logged"] = True
-        # TP 체결 시 현재 사이클 엔트리를 종료 처리해 다음 사이클 진입 가능하게 함.
         for entry in st.get("entries", []):
             if entry.get("filled"):
                 entry["closed"] = True
@@ -335,9 +339,10 @@ def check_tp_filled_and_log() -> None:
         remove_symbols.append(symbol)
         dirty = True
         logger.info(
-            "TP 체결 기록 완료: %s tpOrderId=%s",
+            "TP 체결 기록 완료: %s tpOrderId=%s pnl=%s",
             symbol,
             tp_oid,
+            pnl,
             extra={"event": "tp_filled_logged", "symbol": symbol, "order_id": int(tp_oid)},
         )
     for symbol in remove_symbols:
@@ -357,25 +362,76 @@ def _passes_entry_prefilters(symbol: str) -> Tuple[bool, str]:
     return True, "ok"
 
 
+def _is_st_halted(symbol: str) -> bool:
+    return symbol in runtime.ST_HALTED_SYMBOLS
+
+
+def _record_st_trade_pnl(symbol: str, pnl: Decimal) -> None:
+    watch = runtime.QUALIFIED_WATCH.get(symbol, {})
+    if pnl < 0:
+        losses = int(watch.get("consecutive_losses", 0)) + 1
+    else:
+        losses = 0
+    if symbol in runtime.QUALIFIED_WATCH:
+        runtime.QUALIFIED_WATCH[symbol]["consecutive_losses"] = losses
+    logger.info(
+        "SuperTrend 손익 기록: %s pnl=%s 연속손실=%s/%s",
+        symbol,
+        pnl,
+        losses,
+        config.ST_MAX_CONSECUTIVE_LOSSES,
+        extra={
+            "event": "st_trade_pnl",
+            "symbol": symbol,
+            "pnl": str(pnl),
+            "consecutive_losses": losses,
+        },
+    )
+    if losses >= config.ST_MAX_CONSECUTIVE_LOSSES:
+        _halt_st_symbol(symbol, losses)
+    elif config.USE_SUPERTREND_ENTRY:
+        state.save_qualified_watch()
+
+
+def _halt_st_symbol(symbol: str, losses: int) -> None:
+    runtime.ST_HALTED_SYMBOLS.add(symbol)
+    runtime.QUALIFIED_WATCH.pop(symbol, None)
+    state.save_qualified_watch()
+    logger.warning(
+        "SuperTrend 연속 %s회 손실 — %s 매매 정지",
+        losses,
+        symbol,
+        extra={"event": "st_symbol_halted", "symbol": symbol, "consecutive_losses": losses},
+    )
+
+
 def _sync_qualified_watch(gainers: List[Dict[str, Any]]) -> set[str]:
-    """급등 후보(상위) 중 1차 지표 통과 종목을 SuperTrend 감시 목록에 반영."""
+    """급등 후보(상위) 중 1차 지표 통과 종목을 SuperTrend 방향 매매 감시에 반영."""
     now = time.time()
     active: set[str] = set()
     for g in gainers[:10]:
         symbol = g["symbol"]
+        if _is_st_halted(symbol):
+            continue
         until = runtime.SKIP_UNTIL.get(symbol, 0)
         if until and int(now) < until:
             continue
         if symbol in state.position_state:
+            active.add(symbol)
             continue
         ok, reason = _passes_entry_prefilters(symbol)
         if not ok:
             continue
         active.add(symbol)
         if symbol not in runtime.QUALIFIED_WATCH:
-            runtime.QUALIFIED_WATCH[symbol] = {"added_at": now, "last_direction": None}
+            runtime.QUALIFIED_WATCH[symbol] = {
+                "added_at": now,
+                "last_direction": None,
+                "consecutive_losses": 0,
+                "halted": False,
+            }
             logger.info(
-                "SuperTrend 숏 신호 대기 등록: %s",
+                "SuperTrend 방향 매매 감시 등록: %s",
                 symbol,
                 extra={"event": "supertrend_watch_added", "symbol": symbol},
             )
@@ -393,9 +449,13 @@ def _sync_qualified_watch(gainers: List[Dict[str, Any]]) -> set[str]:
     return active
 
 
-def _record_initial_short_entry(symbol: str, entry: Tuple[Decimal, Decimal, int]) -> None:
+def _new_st_position_state(
+    symbol: str, direction: str, entry: Tuple[Decimal, Decimal, int]
+) -> Dict[str, Any]:
     entry_price, qty, order_id = entry
-    state.position_state[symbol] = {
+    return {
+        "st_mode": True,
+        "st_signal_direction": direction,
         "entry_price": entry_price,
         "reentry_count": 0,
         "last_reentry_price": entry_price,
@@ -405,7 +465,7 @@ def _record_initial_short_entry(symbol: str, entry: Tuple[Decimal, Decimal, int]
         "tp_exit_logged": False,
         "entries": [
             {
-                "direction": "SHORT",
+                "direction": direction,
                 "entry_price": entry_price,
                 "qty": qty,
                 "order_id": order_id,
@@ -413,61 +473,204 @@ def _record_initial_short_entry(symbol: str, entry: Tuple[Decimal, Decimal, int]
             }
         ],
     }
-    runtime.QUALIFIED_WATCH.pop(symbol, None)
+
+
+def _record_initial_short_entry(symbol: str, entry: Tuple[Decimal, Decimal, int]) -> None:
+    state.position_state[symbol] = _new_st_position_state(symbol, "SHORT", entry)
+    state.position_state[symbol].pop("st_mode", None)
+    state.position_state[symbol].pop("st_signal_direction", None)
     logger.info(
         "%s 첫 진입 기록: entry_price=%s, orderId=%s, qty=%s",
         symbol,
-        entry_price,
-        order_id,
-        qty,
+        entry[0],
+        entry[2],
+        entry[1],
         extra={
             "event": "entry_recorded",
             "symbol": symbol,
-            "entry_price": str(entry_price),
-            "order_id": order_id,
-            "qty": str(qty),
+            "entry_price": str(entry[0]),
+            "order_id": entry[2],
+            "qty": str(entry[1]),
+        },
+    )
+    state.save_position_state()
+
+
+def _record_st_entry(symbol: str, direction: str, entry: Tuple[Decimal, Decimal, int]) -> None:
+    state.position_state[symbol] = _new_st_position_state(symbol, direction, entry)
+    watch = runtime.QUALIFIED_WATCH.get(symbol)
+    if watch is not None:
+        st_dir = 1 if direction == "LONG" else -1
+        watch["last_direction"] = st_dir
+    logger.info(
+        "%s SuperTrend %s 진입 기록: price=%s orderId=%s qty=%s",
+        symbol,
+        direction,
+        entry[0],
+        entry[2],
+        entry[1],
+        extra={
+            "event": "st_entry_recorded",
+            "symbol": symbol,
+            "direction": direction,
+            "entry_price": str(entry[0]),
+            "order_id": entry[2],
         },
     )
     state.save_position_state()
     state.save_qualified_watch()
 
 
-def _try_initial_short_entry(symbol: str) -> None:
-    if config.USE_SUPERTREND_ENTRY:
-        ok, reason = indicators.is_supertrend_short_signal(symbol)
-        if not ok:
-            if symbol in runtime.QUALIFIED_WATCH:
-                logger.info(
-                    "SuperTrend 숏 신호 대기: %s (%s)",
-                    symbol,
-                    reason,
-                    extra={
-                        "event": "supertrend_entry_waiting",
-                        "symbol": symbol,
-                        "reason": reason,
-                    },
-                )
-            return
-        logger.info(
-            "SuperTrend 숏 신호 확인, 진입 시도: %s (%s)",
-            symbol,
-            reason,
-            extra={"event": "supertrend_short_signal", "symbol": symbol},
-        )
+def _has_pending_entry(st: Dict[str, Any]) -> bool:
+    for entry in st.get("entries", []):
+        if not entry.get("filled") and not entry.get("closed"):
+            return True
+    return False
+
+
+def _close_st_position_for_flip(symbol: str, st: Dict[str, Any]) -> Optional[Decimal]:
+    tp_oid = st.get("tp_order_id")
+    if tp_oid:
+        orders.cancel_order(symbol, int(tp_oid))
+        st["tp_order_id"] = None
+
+    avg_entry, total_qty, direction = _get_filled_position(st)
+    if total_qty <= 0:
+        return None
+
+    result = orders.close_position_market(symbol, direction, total_qty)
+    if not result:
+        return None
+    est_price, close_oid = result
+    time.sleep(0.5)
+    exit_price = est_price
+    detail = orders.get_order_detail(symbol, close_oid)
+    if detail:
+        ap = Decimal(str(detail.get("avgPrice", "0")))
+        if ap > 0:
+            exit_price = ap
+
+    pnl = trade_journal.calc_pnl_usdt(direction, avg_entry, exit_price, total_qty)
+    trade_journal.log_exit_filled(
+        symbol=symbol,
+        direction=direction,
+        entry_order_id="MULTI",
+        tp_order_id=close_oid,
+        entry_price=avg_entry,
+        exit_price=exit_price,
+        qty=total_qty,
+        entry_time_ms=None,
+        exit_time_ms=detail.get("updateTime") if detail and isinstance(detail.get("updateTime"), int) else None,
+        note="SuperTrend 방향 전환 청산",
+    )
+    for entry in st.get("entries", []):
+        entry["closed"] = True
+        entry["filled"] = False
+    return pnl
+
+
+def _try_st_entry(symbol: str, direction: str) -> None:
+    if direction == "LONG":
+        entry = orders.place_long_order(symbol)
     else:
-        ok, reason = _passes_entry_prefilters(symbol)
-        if not ok:
+        entry = orders.place_short_order(symbol)
+    if entry is not None:
+        _record_st_entry(symbol, direction, entry)
+
+
+def _process_supertrend_symbol(symbol: str) -> None:
+    if _is_st_halted(symbol):
+        return
+
+    curr_d, reason = indicators.get_supertrend_direction(symbol)
+    if curr_d is None:
+        if symbol in runtime.QUALIFIED_WATCH:
             logger.info(
-                "지표 필터로 신규 진입 스킵: %s reason=%s",
+                "SuperTrend 방향 조회 실패: %s (%s)",
+                symbol,
+                reason,
+                extra={"event": "supertrend_direction_failed", "symbol": symbol},
+            )
+        return
+
+    target_dir = indicators.st_int_to_direction(curr_d)
+    st = state.position_state.get(symbol)
+
+    if st is not None:
+        if _has_pending_entry(st) and not any(e.get("filled") for e in st.get("entries", [])):
+            held_dir = str(st.get("st_signal_direction", ""))
+            if held_dir and held_dir != target_dir:
+                logger.info(
+                    "SuperTrend 전환 — 미체결 %s 주문 취소 후 %s 재시도: %s",
+                    held_dir,
+                    target_dir,
+                    symbol,
+                    extra={"event": "st_cancel_pending_flip", "symbol": symbol},
+                )
+                for entry in st.get("entries", []):
+                    if entry.get("filled") or entry.get("closed"):
+                        continue
+                    orders.cancel_order(symbol, int(entry["order_id"]))
+                    entry["closed"] = True
+                state.position_state.pop(symbol, None)
+                state.save_position_state()
+                if symbol in runtime.QUALIFIED_WATCH:
+                    _try_st_entry(symbol, target_dir)
+            return
+
+        avg_entry, total_qty, held_dir = _get_filled_position(st)
+        if total_qty > 0 and held_dir != target_dir:
+            logger.warning(
+                "SuperTrend %s→%s 전환 청산 후 반대 진입: %s (%s)",
+                held_dir,
+                target_dir,
                 symbol,
                 reason,
                 extra={
-                    "event": "initial_entry_indicator_skipped",
+                    "event": "st_flip",
                     "symbol": symbol,
-                    "reason": reason,
+                    "from": held_dir,
+                    "to": target_dir,
                 },
             )
-            return
+            pnl = _close_st_position_for_flip(symbol, st)
+            state.position_state.pop(symbol, None)
+            state.save_position_state()
+            if pnl is not None:
+                _record_st_trade_pnl(symbol, pnl)
+            if _is_st_halted(symbol):
+                return
+            if symbol in runtime.QUALIFIED_WATCH:
+                _try_st_entry(symbol, target_dir)
+        return
+
+    if symbol not in runtime.QUALIFIED_WATCH:
+        return
+
+    logger.info(
+        "SuperTrend %s 진입 시도: %s (%s)",
+        target_dir,
+        symbol,
+        reason,
+        extra={"event": "st_entry_attempt", "symbol": symbol, "direction": target_dir},
+    )
+    _try_st_entry(symbol, target_dir)
+
+
+def _try_initial_short_entry(symbol: str) -> None:
+    ok, reason = _passes_entry_prefilters(symbol)
+    if not ok:
+        logger.info(
+            "지표 필터로 신규 진입 스킵: %s reason=%s",
+            symbol,
+            reason,
+            extra={
+                "event": "initial_entry_indicator_skipped",
+                "symbol": symbol,
+                "reason": reason,
+            },
+        )
+        return
 
     entry = orders.place_short_order(symbol)
     if entry is not None:
@@ -475,9 +678,13 @@ def _try_initial_short_entry(symbol: str) -> None:
 
 
 def monitor_loop() -> None:
-    st_mode = "ON" if config.USE_SUPERTREND_ENTRY else "OFF"
+    st_mode = (
+        f"ON (롱/숏 추종, 연속손실정지={config.ST_MAX_CONSECUTIVE_LOSSES})"
+        if config.USE_SUPERTREND_ENTRY
+        else "OFF"
+    )
     logger.info(
-        "Bybit 선물 급등 종목 감시 시작 (스팟+선물 공존, SuperTrend 진입=%s)...",
+        "Bybit 선물 급등 종목 감시 시작 (스팟+선물 공존, SuperTrend=%s)...",
         st_mode,
     )
     while True:
@@ -530,7 +737,11 @@ def monitor_loop() -> None:
                     current_price = g["last_price"]
                     change_pct = g["change_pct"]
                     funding_rate = g.get("funding_rate", Decimal("0"))
-                    watch_tag = " [ST감시]" if symbol in runtime.QUALIFIED_WATCH else ""
+                    watch_tag = ""
+                    if _is_st_halted(symbol):
+                        watch_tag = " [ST정지]"
+                    elif symbol in runtime.QUALIFIED_WATCH:
+                        watch_tag = " [ST감시]"
 
                     logger.info(
                         "%s. %s%s | price: %.4f | change: %.2f%% | funding: %s",
@@ -551,12 +762,22 @@ def monitor_loop() -> None:
                         },
                     )
 
+                    if _is_st_halted(symbol):
+                        continue
+
+                    if config.USE_SUPERTREND_ENTRY:
+                        _process_supertrend_symbol(symbol)
+                        if symbol in state.position_state and state.position_state[symbol].get(
+                            "st_mode"
+                        ):
+                            continue
+
                     if symbol not in state.position_state:
-                        if config.USE_SUPERTREND_ENTRY:
-                            if symbol in runtime.QUALIFIED_WATCH:
-                                _try_initial_short_entry(symbol)
-                        else:
+                        if not config.USE_SUPERTREND_ENTRY:
                             _try_initial_short_entry(symbol)
+                        continue
+
+                    if config.USE_SUPERTREND_ENTRY:
                         continue
 
                     st = state.position_state[symbol]
@@ -617,6 +838,13 @@ def monitor_loop() -> None:
                                     },
                                 )
                                 state.save_position_state()
+
+            if config.USE_SUPERTREND_ENTRY and gainers:
+                ranked = {g["symbol"] for g in gainers[:10]}
+                for symbol, st in list(state.position_state.items()):
+                    if symbol in ranked or not st.get("st_mode") or _is_st_halted(symbol):
+                        continue
+                    _process_supertrend_symbol(symbol)
 
             check_filled_and_refresh_tp()
             check_tp_filled_and_log()

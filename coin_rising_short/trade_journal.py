@@ -82,6 +82,14 @@ def log_entry_filled(
     )
 
 
+def calc_pnl_usdt(
+    direction: str, entry_price: Decimal, exit_price: Decimal, qty: Decimal
+) -> Decimal:
+    if direction.upper() == "SHORT":
+        return (entry_price - exit_price) * qty
+    return (exit_price - entry_price) * qty
+
+
 def log_exit_filled(
     symbol: str,
     direction: str,
@@ -95,10 +103,7 @@ def log_exit_filled(
     note: str = "",
 ) -> None:
     notional = entry_price * qty
-    if direction.upper() == "SHORT":
-        pnl = (entry_price - exit_price) * qty
-    else:
-        pnl = (exit_price - entry_price) * qty
+    pnl = calc_pnl_usdt(direction, entry_price, exit_price, qty)
     profit_pct = Decimal("0")
     if notional > 0:
         profit_pct = (pnl / notional) * Decimal("100")

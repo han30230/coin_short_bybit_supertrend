@@ -9,8 +9,8 @@ _PROJECT_ROOT = os.path.dirname(_PACKAGE_ROOT)
 
 load_dotenv(dotenv_path=os.path.join(_PROJECT_ROOT, ".env"))
 
-API_KEY = os.getenv("BYBIT_API_KEY_SH") or os.getenv("BYBIT_API_KEY")
-API_SECRET = os.getenv("BYBIT_SECRET_SH") or os.getenv("BYBIT_SECRET")
+API_KEY = os.getenv("BYBIT_API_KEY") or os.getenv("BYBIT_API_KEY")
+API_SECRET = os.getenv("BYBIT_SECRET") or os.getenv("BYBIT_SECRET")
 
 ENV = (os.getenv("BYBIT_ENV") or os.getenv("BINANCE_ENV") or "mainnet").lower()
 BASE_URL = "https://api.bybit.com" if ENV == "mainnet" else "https://api-testnet.bybit.com"
@@ -78,6 +78,7 @@ SUPERTREND_KLINE_LIMIT = int(os.getenv("SUPERTREND_KLINE_LIMIT") or "100")
 SUPERTREND_WATCH_STATE_PATH = os.getenv("SUPERTREND_WATCH_STATE_FILE") or os.path.join(
     _PROJECT_ROOT, "supertrend_watch.json"
 )
+ST_MAX_CONSECUTIVE_LOSSES = int(os.getenv("ST_MAX_CONSECUTIVE_LOSSES") or "2")
 
 CMC_API_KEY = (os.getenv("CMC_API_KEY") or "").strip()
 MCAP_FILTER_ENABLED = bool(CMC_API_KEY)

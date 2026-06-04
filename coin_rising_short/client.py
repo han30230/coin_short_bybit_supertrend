@@ -430,6 +430,36 @@ def cancel_order(symbol: str, order_id: int) -> bool:
     return True
 
 
+def place_market_order_raw(
+    symbol: str,
+    side: str,
+    qty: str,
+    position_side: Optional[str],
+    reduce_only: bool = False,
+) -> Tuple[Optional[int], Optional[dict]]:
+    body: dict = {
+        "category": config.CATEGORY_LINEAR,
+        "symbol": symbol,
+        "side": side.capitalize(),
+        "orderType": "Market",
+        "qty": qty,
+        "timeInForce": "IOC",
+        "positionIdx": position_idx_for_side(position_side),
+    }
+    if reduce_only:
+        body["reduceOnly"] = True
+
+    result = signed_post("/v5/order/create", body)
+    if isinstance(result, dict) and result.get("_error"):
+        return None, {
+            "code": result.get("retCode"),
+            "msg": result.get("retMsg"),
+        }
+    if isinstance(result, dict) and result.get("orderId"):
+        return int(result["orderId"]), None
+    return None, {"msg": str(result)}
+
+
 def place_limit_order_raw(
     symbol: str,
     side: str,

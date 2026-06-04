@@ -209,6 +209,64 @@ def _is_risk_limit_error(err: Optional[dict]) -> bool:
         return False
 
 
+def close_position_market(
+    symbol: str, direction: str, qty: Decimal
+) -> Optional[Tuple[Decimal, int]]:
+    """보유 포지션(direction) 시장가 청산. (체결가 추정용 현재가, orderId) 반환."""
+    if qty <= 0:
+        return None
+    try:
+        from coin_rising_short import filters
+
+        price_step, qty_step, min_qty, _ = filters.get_price_step_and_qty_step(symbol)
+        eff_qty = filters.round_step_floor(qty, qty_step)
+        if eff_qty < min_qty:
+            logger.warning("청산 수량 최소 미달: %s qty=%s", symbol, qty)
+            return None
+
+        if direction.upper() == "SHORT":
+            side = "BUY"
+            pos_side = "SHORT" if runtime.IS_HEDGE else None
+        else:
+            side = "SELL"
+            pos_side = "LONG" if runtime.IS_HEDGE else None
+
+        price = client.get_ticker_price(symbol)
+        order_id, err = client.place_market_order_raw(
+            symbol=symbol,
+            side=side,
+            qty=str(eff_qty),
+            position_side=pos_side,
+            reduce_only=True,
+        )
+        if order_id is None:
+            logger.warning(
+                "시장가 청산 실패: %s %s / %s",
+                symbol,
+                direction,
+                err,
+                extra={"event": "market_close_failed", "symbol": symbol},
+            )
+            return None
+        logger.info(
+            "시장가 청산 주문: %s %s qty=%s orderId=%s",
+            symbol,
+            direction,
+            eff_qty,
+            order_id,
+            extra={
+                "event": "market_close_placed",
+                "symbol": symbol,
+                "direction": direction,
+                "order_id": order_id,
+            },
+        )
+        return price, order_id
+    except Exception as e:
+        logger.exception("시장가 청산 예외: %s", e)
+        return None
+
+
 def place_short_order(
     symbol: str, notional_usdt: Optional[Decimal] = None
 ) -> Optional[Tuple[Decimal, Decimal, int]]:

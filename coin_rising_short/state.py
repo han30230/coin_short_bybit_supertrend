@@ -75,13 +75,18 @@ def load_qualified_watch() -> None:
             return
         restored = 0
         for symbol, entry in raw.items():
-            if symbol in position_state:
-                continue
             if not isinstance(entry, dict):
+                continue
+            if bool(entry.get("halted", False)):
+                runtime.ST_HALTED_SYMBOLS.add(symbol)
+                continue
+            if symbol in position_state:
                 continue
             runtime.QUALIFIED_WATCH[symbol] = {
                 "added_at": float(entry.get("added_at", 0)),
                 "last_direction": None,
+                "consecutive_losses": int(entry.get("consecutive_losses", 0)),
+                "halted": False,
             }
             restored += 1
         if restored:
@@ -101,8 +106,19 @@ def save_qualified_watch() -> None:
     try:
         path = config.SUPERTREND_WATCH_STATE_PATH
         tmp = path + ".tmp"
+        payload: Dict[str, Any] = {
+            sym: {
+                "added_at": entry.get("added_at", 0),
+                "consecutive_losses": int(entry.get("consecutive_losses", 0)),
+                "halted": False,
+            }
+            for sym, entry in runtime.QUALIFIED_WATCH.items()
+            if isinstance(entry, dict)
+        }
+        for sym in runtime.ST_HALTED_SYMBOLS:
+            payload[sym] = {"halted": True, "consecutive_losses": config.ST_MAX_CONSECUTIVE_LOSSES}
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(runtime.QUALIFIED_WATCH, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
     except Exception as e:
         logger.warning("ST 감시 파일 저장 실패: %s", e)

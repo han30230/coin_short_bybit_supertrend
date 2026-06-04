@@ -232,6 +232,48 @@ def _supertrend_directions(
     return direction
 
 
+def st_int_to_direction(st_dir: int) -> str:
+    return "LONG" if st_dir == 1 else "SHORT"
+
+
+def get_supertrend_direction(symbol: str) -> Tuple[Optional[int], str]:
+    """최근 닫힌 봉 SuperTrend 방향. 1=상승(롱), -1=하락(숏)."""
+    try:
+        ohlc, err = _get_closed_ohlc(
+            symbol,
+            interval=config.SUPERTREND_INTERVAL,
+            limit=config.SUPERTREND_KLINE_LIMIT,
+        )
+        if ohlc is None:
+            return None, err or "OHLC 없음"
+
+        highs = ohlc["highs"]
+        lows = ohlc["lows"]
+        closes = ohlc["closes"]
+        period = config.SUPERTREND_ATR_PERIOD
+        min_len = period + 5
+        if len(closes) < min_len:
+            return None, f"캔들 부족: {len(closes)} < {min_len}"
+
+        directions = _supertrend_directions(
+            highs, lows, closes, period, config.SUPERTREND_FACTOR
+        )
+        curr_d = directions[len(directions) - 1]
+        return curr_d, (
+            f"supertrend_{config.SUPERTREND_INTERVAL} dir={curr_d} "
+            f"p={period} f={config.SUPERTREND_FACTOR}"
+        )
+    except Exception as exc:
+        msg = f"SuperTrend 계산 실패: {exc}"
+        logger.warning(
+            "%s symbol=%s",
+            msg,
+            symbol,
+            extra={"event": "supertrend_exception", "symbol": symbol},
+        )
+        return None, msg
+
+
 def is_supertrend_short_signal(symbol: str) -> Tuple[bool, str]:
     """
     최근 닫힌 4h 봉 기준 SuperTrend 하락(-1)이면 True.
