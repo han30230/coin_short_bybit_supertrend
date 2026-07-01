@@ -439,16 +439,6 @@ def _bot_managed_stale_cancel_keys() -> set[tuple[str, str]]:
     return set(runtime.BOT_ENTRY_ORDER_KEYS)
 
 
-def _active_st_position_count() -> int:
-    return sum(1 for st in state.position_state.values() if st.get("st_mode"))
-
-
-def _can_open_new_st_slot(symbol: str) -> bool:
-    if symbol in state.position_state:
-        return True
-    return _active_st_position_count() < config.MAX_CONCURRENT_ST_SYMBOLS
-
-
 def _reconcile_stale_entries_in_state() -> None:
     """거래소에서 취소된 오래된 진입 주문에 맞춰 로컬 상태 정리."""
     dirty = False
@@ -502,66 +492,7 @@ def _set_st_losses(symbol: str, losses: int) -> None:
     runtime.QUALIFIED_WATCH[symbol]["consecutive_losses"] = losses
 
 
-def _can_add_st_tracked(symbol: str) -> bool:
-    if symbol in runtime.ST_TRACKED_SYMBOLS:
-        return True
-    if symbol in state.position_state:
-        return True
-    if _exchange_position_side(symbol):
-        return True
-    return len(runtime.ST_TRACKED_SYMBOLS) < config.MAX_ST_TRACKED_SYMBOLS
-
-
-def enforce_st_tracked_limit(
-    exchange_positions: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> bool:
-    """ST 추적 심볼 상한 — 포지션 보유 종목은 유지."""
-    max_n = config.MAX_ST_TRACKED_SYMBOLS
-    if len(runtime.ST_TRACKED_SYMBOLS) <= max_n:
-        return False
-    protected: Set[str] = set(state.position_state.keys())
-    if exchange_positions:
-        protected.update(exchange_positions.keys())
-    else:
-        try:
-            for p in client.get_position_risk():
-                if Decimal(str(p.get("size", "0"))) > 0 and p.get("symbol"):
-                    protected.add(p["symbol"])
-        except Exception:
-            pass
-    removable = [
-        s
-        for s in runtime.ST_TRACKED_SYMBOLS
-        if s not in protected and not _is_st_halted(s)
-    ]
-    removable.sort(
-        key=lambda s: float(runtime.QUALIFIED_WATCH.get(s, {}).get("added_at", 0))
-    )
-    changed = False
-    while len(runtime.ST_TRACKED_SYMBOLS) > max_n and removable:
-        sym = removable.pop(0)
-        runtime.ST_TRACKED_SYMBOLS.discard(sym)
-        if sym in runtime.QUALIFIED_WATCH and sym not in protected:
-            runtime.QUALIFIED_WATCH.pop(sym, None)
-        changed = True
-        logger.info(
-            "ST 추적 상한(%s) — 추적 해제: %s",
-            max_n,
-            sym,
-            extra={"event": "st_tracked_trimmed", "symbol": sym, "max_tracked": max_n},
-        )
-    return changed
-
-
 def _mark_st_tracked(symbol: str) -> None:
-    if not _can_add_st_tracked(symbol):
-        logger.warning(
-            "ST 추적 상한(%s개) — 추적 등록 스킵: %s",
-            config.MAX_ST_TRACKED_SYMBOLS,
-            symbol,
-            extra={"event": "st_tracked_limit_reached", "symbol": symbol},
-        )
-        return
     runtime.ST_TRACKED_SYMBOLS.add(symbol)
     _ensure_st_watch(symbol)
     state.save_qualified_watch()
@@ -831,32 +762,6 @@ def _try_st_entry(symbol: str, direction: str) -> None:
         )
         return
 
-    if not _can_open_new_st_slot(symbol):
-        logger.info(
-            "동시 매매 한도(%s개) — 신규 진입 스킵: %s",
-            config.MAX_CONCURRENT_ST_SYMBOLS,
-            symbol,
-            extra={
-                "event": "st_entry_skip_max_concurrent",
-                "symbol": symbol,
-                "active": _active_st_position_count(),
-            },
-        )
-        return
-
-    if symbol not in runtime.ST_TRACKED_SYMBOLS and not _can_add_st_tracked(symbol):
-        logger.info(
-            "ST 추적 상한(%s개) — 신규 진입 스킵: %s",
-            config.MAX_ST_TRACKED_SYMBOLS,
-            symbol,
-            extra={
-                "event": "st_entry_skip_max_tracked",
-                "symbol": symbol,
-                "tracked": len(runtime.ST_TRACKED_SYMBOLS),
-            },
-        )
-        return
-
     if direction == "LONG":
         entry = orders.place_long_order(symbol)
     else:
@@ -958,11 +863,9 @@ def monitor_loop() -> None:
     )
     entry_mode = "시장가" if config.USE_MARKET_ENTRY else "지정가"
     logger.info(
-        "Bybit USDT 선물 (24h +%s%% → ST, %s 진입, 동시최대 %s개, ST추적최대 %s개, 미체결 %s일 취소, 연속손실 %s회 정지) %s",
+        "Bybit USDT 선물 (24h +%s%% → ST, %s 진입, 미체결 %s일 취소, 연속손실 %s회 정지) %s",
         config.GAINER_THRESHOLD_PCT,
         entry_mode,
-        config.MAX_CONCURRENT_ST_SYMBOLS,
-        config.MAX_ST_TRACKED_SYMBOLS,
         config.OPEN_ORDER_MAX_AGE_DAYS,
         config.ST_MAX_CONSECUTIVE_LOSSES,
         st_mode,

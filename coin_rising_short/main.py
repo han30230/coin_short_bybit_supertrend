@@ -114,12 +114,6 @@ def run() -> None:
     runtime.IS_HEDGE = orders.get_dual_side_position()
     logger.info("Hedge mode?: %s", runtime.IS_HEDGE, extra={"event": "hedge_mode_checked"})
 
-    logger.info(
-        "ST 추적 상한=%s | 동시 포지션 상한=%s",
-        config.MAX_ST_TRACKED_SYMBOLS,
-        config.MAX_CONCURRENT_ST_SYMBOLS,
-        extra={"event": "st_limits_configured"},
-    )
     sync.sync_state_with_exchange()
     monitor.monitor_loop()
 

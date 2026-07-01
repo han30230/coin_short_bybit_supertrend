@@ -136,7 +136,7 @@ def _adopt_exchange_position(symbol: str, ep: Dict[str, Any]) -> None:
 
 def reconcile_positions_with_exchange(ex_positions: Dict[str, Dict[str, Any]]) -> bool:
     """저장 상태 ↔ 거래소 포지션 맞춤. True if state file should be saved."""
-    from coin_rising_short.monitor import _set_last_flat_direction, enforce_st_tracked_limit
+    from coin_rising_short.monitor import _set_last_flat_direction
 
     dirty = False
     for symbol, st in list(state.position_state.items()):
@@ -227,9 +227,6 @@ def reconcile_positions_with_exchange(ex_positions: Dict[str, Dict[str, Any]]) -
         _adopt_exchange_position(symbol, ep)
         dirty = True
 
-    trimmed = enforce_st_tracked_limit(ex_positions)
-    if trimmed:
-        dirty = True
     return dirty
 
 
@@ -253,10 +250,6 @@ def sync_state_with_exchange() -> None:
             config.POSITION_STATE_PATH,
             extra={"event": "state_empty"},
         )
-        from coin_rising_short.monitor import enforce_st_tracked_limit
-
-        if enforce_st_tracked_limit(ex_positions):
-            state.save_qualified_watch()
         return
 
     logger.info("거래소와 상태 동기화 중...", extra={"event": "sync_started"})

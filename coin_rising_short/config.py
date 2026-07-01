@@ -79,8 +79,6 @@ SUPERTREND_WATCH_STATE_PATH = os.getenv("SUPERTREND_WATCH_STATE_FILE") or os.pat
     _PROJECT_ROOT, "supertrend_watch.json"
 )
 ST_MAX_CONSECUTIVE_LOSSES = int(os.getenv("ST_MAX_CONSECUTIVE_LOSSES") or "2")
-MAX_CONCURRENT_ST_SYMBOLS = int(os.getenv("MAX_CONCURRENT_ST_SYMBOLS") or "20")
-MAX_ST_TRACKED_SYMBOLS = int(os.getenv("MAX_ST_TRACKED_SYMBOLS") or "60")
 USE_MARKET_ENTRY = (os.getenv("USE_MARKET_ENTRY") or "false").lower() == "true"
 OPEN_ORDER_MAX_AGE_DAYS = int(os.getenv("OPEN_ORDER_MAX_AGE_DAYS") or "2")
 
