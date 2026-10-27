@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
-from coin_rising_short import client, config, monitor, notifications, orders, runtime, state, sync, symbols
+from coin_rising_short import basket_profit, client, config, monitor, notifications, orders, runtime, state, sync, symbols
 
 
 class JsonLineFormatter(logging.Formatter):
@@ -107,14 +107,24 @@ def _run_bot() -> None:
         extra={"event": "time_sync_done"},
     )
 
-    symbols.init_trading_symbols(max_retries=3)
+    try:
+        symbols.init_trading_symbols(max_retries=3)
+    except Exception:
+        if not basket_profit.is_active():
+            raise
+        logger.error("심볼 조회 실패 — 진행 중 전체 청산을 먼저 재개", extra={"event": "basket_error"})
 
-    if config.FORCE_HEDGE:
+    if config.FORCE_HEDGE and not basket_profit.is_active():
         orders.set_dual_side_position(True)
     runtime.IS_HEDGE = orders.get_dual_side_position()
     logger.info("Hedge mode?: %s", runtime.IS_HEDGE, extra={"event": "hedge_mode_checked"})
 
-    sync.sync_state_with_exchange()
+    if config.BASKET_TP_ENABLED or basket_profit.is_active():
+        # Do not let legacy sync inflate ownership or adopt watch-only foreign inventory.
+        state.load_position_state()
+        state.load_qualified_watch()
+    else:
+        sync.sync_state_with_exchange()
     logger.info("봇 초기화 완료", extra={"event": "bot_ready"})
     monitor.monitor_loop()
 
@@ -123,11 +133,13 @@ def run() -> None:
     _configure_logging()
     notifications.configure("Bybit ST 롱숏", orders.get_order_detail)
     try:
+        basket_profit.initialize()
         _run_bot()
     except Exception:
         logging.getLogger(__name__).exception("봇 초기화/실행 실패", extra={"event": "bot_fatal"})
         raise
     finally:
+        basket_profit.shutdown()
         notifications.shutdown()
 
 

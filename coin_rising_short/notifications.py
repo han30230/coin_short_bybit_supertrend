@@ -94,10 +94,10 @@ class TelegramNotifier:
             valid = price.is_finite() and qty.is_finite() and price > 0 and qty > 0
         except Exception:
             valid = False
-        if not valid or status not in ('FILLED', 'PARTIALLY_FILLED'):
+        if not valid or status not in ('FILLED', 'PARTIALLY_FILLED', 'CANCELED'):
             return self._header('체결 확인 필요') + base + f'\n주문 상태: {status}\n거래소에서 직접 확인하세요.'
         title = '진입 체결' if job['kind'] == 'entry' else '청산 체결'
-        if status == 'PARTIALLY_FILLED':
+        if status in ('PARTIALLY_FILLED', 'CANCELED'):
             title = '진입 부분 체결' if job['kind'] == 'entry' else '청산 부분 체결'
         message = self._header(title) + base + f'\n체결가: {price}\n체결 수량: {qty}\n명목금액: {price * qty} USDT'
         if job['kind'] == 'exit':
@@ -154,6 +154,9 @@ class TelegramLogHandler(logging.Handler):
     _IMPORTANT = {
         'startup': '봇 시작 (초기화 중)',
         'bot_ready': '봇 초기화 완료',
+        'basket_started': '합산 목표 도달 — 전체 청산 시작',
+        'basket_completed': '전체 청산 완료 — 다음 사이클 대기',
+        'basket_error': '전체 청산/감시 보류 — 로그 확인 필요',
         'order_place_failed': '주문 접수 실패',
         'market_close_failed': '청산 주문 실패',
         'tp_place_failed': '익절 주문 실패 — 포지션 확인 필요',
@@ -173,7 +176,7 @@ class TelegramLogHandler(logging.Handler):
             if event not in self._IMPORTANT and record.levelno < logging.ERROR:
                 return
             symbol = str(getattr(record, 'symbol', ''))
-            key = (record.name, event, symbol)
+            key = (record.name, event, symbol, str(getattr(record, 'cycle_id', '')))
             now = time.monotonic()
             if now - self.last_sent.get(key, float('-inf')) < 300:
                 return
@@ -182,6 +185,13 @@ class TelegramLogHandler(logging.Handler):
             # Only structured identifiers are forwarded; raw messages/tracebacks may contain keys.
             safe_event = re.sub(r'[^a-zA-Z0-9_.-]', '', event)[:100]
             text += f'\n이벤트: {safe_event}'
+            if event in ('basket_started', 'basket_completed'):
+                field = 'pnl' if event == 'basket_started' else 'price_pnl'
+                amount = Decimal(str(getattr(record, field)))
+                if amount.is_finite():
+                    label = '트리거 평가손익' if event == 'basket_started' else '체결 가격 손익(수수료·펀딩 제외)'
+                    text += f'\n{label}: {amount:+.4f} USDT'
+                text += f'\n관리 포지션 수: {int(getattr(record, "positions"))}'
             if symbol:
                 text += '\n종목: ' + re.sub(r'[^a-zA-Z0-9_.-]', '', symbol)[:40]
             if self.notifier.enqueue_text(text, priority=-1 if record.levelno >= logging.ERROR else 0):

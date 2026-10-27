@@ -20,6 +20,7 @@ _ORDER_STATUS_MAP = {
     "PartiallyFilled": "PARTIALLY_FILLED",
     "Filled": "FILLED",
     "Cancelled": "CANCELED",
+    "PartiallyFilledCanceled": "CANCELED",
     "Rejected": "REJECTED",
     "Deactivated": "EXPIRED",
     "Triggered": "NEW",
@@ -520,3 +521,4 @@ def get_position_risk() -> List[dict]:
 # 하위 호환: 기존 signed_request / sign_hmac_sha256 호출 제거용 스텁
 def signed_request(method: str, path: str, params: Optional[dict] = None) -> requests.Response:
     raise NotImplementedError("Binance signed_request는 Bybit 포팅 후 사용되지 않습니다. client.signed_get/post를 사용하세요.")
+

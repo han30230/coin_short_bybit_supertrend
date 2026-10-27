@@ -38,3 +38,7 @@ python migrate_trade_journal.py
 ## Telegram 알림
 
 선택형 체결·청산·오류 알림과 설정 방법은 [Telegram 알림 설정](docs/telegram_notifications.md)을 참고하세요. 기본은 OFF입니다.
+
+## 전체 수익 청산
+
+봇이 관리하는 ST 롱·숏 포지션의 미실현 손익 합계가 목표에 도달하면 전체를 청산하고 새 주기를 시작합니다. 설정과 안전 동작은 [전체 수익 청산 설정](docs/basket_profit.md)을 참고하세요.

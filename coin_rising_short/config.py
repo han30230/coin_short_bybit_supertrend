@@ -90,3 +90,9 @@ MCAP_CACHE_TTL_SEC = int(os.getenv("MCAP_CACHE_TTL_SEC") or "900")
 FILTER_MCAP_FDV = (os.getenv("FILTER_MCAP_FDV") or "false").lower() == "true"
 MIN_MCAP_FDV_RATIO = Decimal(os.getenv("MIN_MCAP_FDV_RATIO") or "0.4")
 COINGECKO_API_BASE = os.getenv("COINGECKO_API_BASE") or "https://api.coingecko.com/api/v3"
+
+
+# Portfolio-wide unrealised profit target for this ST bot only.
+BASKET_TP_ENABLED = (os.getenv('BASKET_TP_ENABLED') or 'true').lower() == 'true'
+BASKET_TP_TARGET_USDT = Decimal(os.getenv('BASKET_TP_TARGET_USDT') or '100')
+BASKET_TP_STATE_FILE = os.getenv('BASKET_TP_STATE_FILE') or os.path.join(_PROJECT_ROOT, 'basket_cycle.json')

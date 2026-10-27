@@ -7,7 +7,7 @@ OrderKey = Tuple[str, str]
 
 OrderId = Union[int, str]
 
-from coin_rising_short import client, config, filters, runtime
+from coin_rising_short import basket_profit, client, config, filters, runtime
 
 _leverage_ready: set = set()
 logger = logging.getLogger(__name__)
@@ -362,6 +362,8 @@ def place_short_order(
 ) -> Optional[Tuple[Decimal, Decimal, str]]:
     logger.info("숏 주문 시도: %s", symbol)
     try:
+        if not basket_profit.entries_allowed():
+            return None
         ensure_leverage(symbol)
         price = client.get_ticker_price(symbol)
         price_step, qty_step, min_qty, min_notional = filters.get_price_step_and_qty_step(symbol)
@@ -422,6 +424,8 @@ def place_long_order(
 ) -> Optional[Tuple[Decimal, Decimal, str]]:
     logger.info("롱 주문 시도: %s", symbol)
     try:
+        if not basket_profit.entries_allowed():
+            return None
         ensure_leverage(symbol)
         price = client.get_ticker_price(symbol)
         price_step, qty_step, min_qty, min_notional = filters.get_price_step_and_qty_step(symbol)

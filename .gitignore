@@ -11,3 +11,5 @@ __pycache__/
 venv/
 .idea/
 .vscode/
+basket_cycle*.json
+basket_cycle*.json.lock

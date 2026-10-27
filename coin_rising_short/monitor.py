@@ -3,7 +3,7 @@ import time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
-from coin_rising_short import client, config, indicators, notifications, orders, runtime, state, symbols, trade_journal
+from coin_rising_short import basket_profit, client, config, indicators, notifications, orders, runtime, state, symbols, trade_journal
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +307,25 @@ def check_filled_and_refresh_tp() -> None:
                     dirty = True
                     symbol_dirty = True
             elif status in ("CANCELED", "REJECTED", "EXPIRED"):
+                detail = orders.get_order_detail(symbol, order_id)
+                if detail is None:
+                    continue  # Unknown terminal fill quantity must not erase live exposure.
+                executed = Decimal(str(detail.get("executedQty") or "0"))
+                actual_price = Decimal(str(detail.get("avgPrice") or "0"))
+                if not executed.is_finite() or executed < 0 or not actual_price.is_finite():
+                    continue
+                if executed > 0:
+                    if actual_price <= 0:
+                        continue
+                    entry.update(qty=executed, entry_price=actual_price, filled=True, closed=False)
+                    if not entry.get("entry_logged"):
+                        trade_journal.log_entry_filled(symbol, direction, order_id, actual_price, executed,
+                                                      None, note="부분 체결 후 진입 주문 종료")
+                        entry["entry_logged"] = True
+                    _unregister_bot_entry_order(symbol, str(order_id))
+                    dirty = True
+                    symbol_dirty = True
+                    continue
                 logger.warning(
                     "진입 주문 종료 상태(%s): %s (orderId=%s) -> TP 생성 스킵",
                     status,
@@ -665,25 +684,9 @@ def _close_st_position_for_flip(symbol: str, st: Dict[str, Any]) -> Optional[Dec
     if total_qty <= 0:
         return None
 
-    ex_side = _exchange_position_side(symbol)
-    if ex_side and ex_side != direction.upper():
-        logger.warning(
-            "청산 방향 불일치(거래소=%s 상태=%s): %s — 거래소 수량 기준 청산",
-            ex_side,
-            direction,
-            symbol,
-        )
-    close_qty = total_qty
-    if ex_side == direction.upper():
-        try:
-            for p in client.get_position_risk():
-                if p.get("symbol") == symbol:
-                    ex_size = Decimal(str(p.get("size", "0")))
-                    if ex_size > 0:
-                        close_qty = ex_size
-                    break
-        except Exception:
-            pass
+    close_qty = basket_profit.managed_close_qty(symbol, direction, total_qty)
+    if close_qty is None or close_qty <= 0:
+        return None
 
     result = orders.close_position_market(symbol, direction, close_qty)
     if not result:
@@ -697,7 +700,7 @@ def _close_st_position_for_flip(symbol: str, st: Dict[str, Any]) -> Optional[Dec
         if ap > 0:
             exit_price = ap
 
-    pnl = trade_journal.calc_pnl_usdt(direction, avg_entry, exit_price, total_qty)
+    pnl = trade_journal.calc_pnl_usdt(direction, avg_entry, exit_price, close_qty)
     trade_journal.log_exit_filled(
         symbol=symbol,
         direction=direction,
@@ -705,7 +708,7 @@ def _close_st_position_for_flip(symbol: str, st: Dict[str, Any]) -> Optional[Dec
         tp_order_id=close_oid,
         entry_price=avg_entry,
         exit_price=exit_price,
-        qty=total_qty,
+        qty=close_qty,
         entry_time_ms=None,
         exit_time_ms=detail.get("updateTime") if detail and isinstance(detail.get("updateTime"), int) else None,
         note="SuperTrend 방향 전환 청산",
@@ -874,6 +877,11 @@ def monitor_loop() -> None:
     )
     while True:
         try:
+            if basket_profit.tick():
+                time.sleep(config.POLL_INTERVAL_SEC)
+                continue
+            if not symbols.TRADING_SYMBOLS:
+                symbols.init_trading_symbols(max_retries=3)
             risers, top3 = get_24h_risers_and_top_movers()
             now_str = time.strftime("%H:%M:%S")
             riser_symbols = {g["symbol"] for g in risers}
