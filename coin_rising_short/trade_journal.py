@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, Union
 
-from coin_rising_short import config
+from coin_rising_short import config, notifications
 
 CSV_HEADERS = [
     "이벤트",
@@ -81,6 +81,8 @@ def log_entry_filled(
         }
     )
 
+    notifications.notify_fill("entry", symbol, direction, order_id, entry_price, note)
+
 
 def calc_pnl_usdt(
     direction: str, entry_price: Decimal, exit_price: Decimal, qty: Decimal
@@ -127,3 +129,4 @@ def log_exit_filled(
             "비고": note,
         }
     )
+    notifications.notify_fill("exit", symbol, direction, tp_order_id, entry_price, note)

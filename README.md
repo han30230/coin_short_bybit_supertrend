@@ -34,3 +34,7 @@ python Bybit_SH_1.py
 ```bash
 python migrate_trade_journal.py
 ```
+
+## Telegram 알림
+
+선택형 체결·청산·오류 알림과 설정 방법은 [Telegram 알림 설정](docs/telegram_notifications.md)을 참고하세요. 기본은 OFF입니다.

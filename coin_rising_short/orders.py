@@ -196,7 +196,8 @@ def place_take_profit_order(
                 },
             )
             return order_id
-        logger.warning("TP 주문 실패: %s / %s", symbol, err)
+        logger.warning("TP 주문 실패: %s / %s", symbol, err,
+                       extra={"event": "tp_place_failed", "symbol": symbol})
         return None
     except Exception as e:
         logger.exception("TP 주문 예외 발생: %s", e)
@@ -474,3 +475,4 @@ def place_long_order(
     except Exception as e:
         logger.exception("롱 주문 예외 발생: %s", e)
         return None
+

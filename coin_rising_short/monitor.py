@@ -3,7 +3,7 @@ import time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
-from coin_rising_short import client, config, indicators, orders, runtime, state, symbols, trade_journal
+from coin_rising_short import client, config, indicators, notifications, orders, runtime, state, symbols, trade_journal
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +233,7 @@ def check_filled_and_refresh_tp() -> None:
                 continue
 
             if status == "FILLED":
+                notifications.notify_fill("entry", symbol, direction, order_id, entry_price)
                 if st.get("st_mode"):
                     ok_st, st_reason = _st_matches_entry(symbol, direction)
                     if not ok_st:
@@ -622,6 +623,7 @@ def _record_st_entry(
         ent = state.position_state[symbol]["entries"][0]
         ent["filled"] = True
         ent["closed"] = False
+        notifications.notify_fill("entry", symbol, direction, entry[2], entry[0])
     watch = runtime.QUALIFIED_WATCH.get(symbol)
     if watch is not None:
         st_dir = 1 if direction == "LONG" else -1
@@ -977,3 +979,4 @@ def monitor_loop() -> None:
         except Exception as e:
             logger.exception("루프 오류: %s", e)
         time.sleep(config.POLL_INTERVAL_SEC)
+

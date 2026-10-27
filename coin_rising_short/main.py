@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
-from coin_rising_short import client, config, monitor, orders, runtime, state, sync, symbols
+from coin_rising_short import client, config, monitor, notifications, orders, runtime, state, sync, symbols
 
 
 class JsonLineFormatter(logging.Formatter):
@@ -92,7 +92,7 @@ def _configure_logging() -> None:
     root.addHandler(file_handler)
 
 
-def run() -> None:
+def _run_bot() -> None:
     _configure_logging()
     logger = logging.getLogger(__name__)
     logger.info(
@@ -115,8 +115,22 @@ def run() -> None:
     logger.info("Hedge mode?: %s", runtime.IS_HEDGE, extra={"event": "hedge_mode_checked"})
 
     sync.sync_state_with_exchange()
+    logger.info("봇 초기화 완료", extra={"event": "bot_ready"})
     monitor.monitor_loop()
+
+
+def run() -> None:
+    _configure_logging()
+    notifications.configure("Bybit ST 롱숏", orders.get_order_detail)
+    try:
+        _run_bot()
+    except Exception:
+        logging.getLogger(__name__).exception("봇 초기화/실행 실패", extra={"event": "bot_fatal"})
+        raise
+    finally:
+        notifications.shutdown()
 
 
 if __name__ == "__main__":
     run()
+
